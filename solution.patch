@@ -1,0 +1,199 @@
+diff --git a/rows/__init__.py b/rows/__init__.py
+index a3e7f7b..b2b56f3 100644
+--- a/rows/__init__.py
++++ b/rows/__init__.py
+@@ -15,7 +15,7 @@ from __future__ import unicode_literals
+ from rows import plugins
+ from rows.fileio import cfopen  # noqa
+ from rows.localization import locale_context  # noqa
+-from rows.operations import join, transform, transpose  # noqa
++from rows.operations import join, select, transform, transpose  # noqa
+ from rows.table import EagerTable, FlexibleTable, IncrementalTable, Table, StreamTable  # noqa
+ from rows.version import as_string as __version__  # noqa
+ 
+diff --git a/rows/cli.py b/rows/cli.py
+index 5d2eaa8..0c63b06 100755
+--- a/rows/cli.py
++++ b/rows/cli.py
+@@ -1752,5 +1752,123 @@ def list_sheets(source):
+         click.echo(sheet_name)
+ 
+ 
++@cli.command(name="select", help="Select specific columns from a table")
++@click.option("--input-encoding", default=None)
++@click.option("--output-encoding", default="utf-8")
++@click.option("--input-locale")
++@click.option("--output-locale")
++@click.option("--verify-ssl", type=bool, default=True)
++@click.option("--timeout", type=int, default=10)
++@click.option("--order-by")
++@click.option(
++    "--samples",
++    type=int,
++    default=DEFAULT_SAMPLE_ROWS,
++    help="Number of rows to determine the field types (0 = all)",
++)
++@click.option(
++    "--input-option",
++    "-i",
++    multiple=True,
++    help="Custom (import) plugin key=value custom option (can be specified multiple times)",
++)
++@click.option(
++    "--output-option",
++    "-o",
++    multiple=True,
++    help="Custom (export) plugin key=value custom option (can be specified multiple times)",
++)
++@click.option("--quiet", "-q", is_flag=True)
++@click.argument("columns", required=True)
++@click.argument("source", required=True)
++@click.argument("destination", required=True)
++def select_command(
++    input_encoding,
++    output_encoding,
++    input_locale,
++    output_locale,
++    verify_ssl,
++    timeout,
++    order_by,
++    samples,
++    input_option,
++    output_option,
++    quiet,
++    columns,
++    source,
++    destination,
++):
++    import rows
++    from rows.fields import make_header
++    from rows.utils import detect_source, export_to_uri
++
++    input_options = parse_options(input_option)
++    output_options = parse_options(output_option)
++    progress = not quiet and _tqdm_available
++
++    input_encoding = input_encoding or input_options.get("encoding", None)
++    source_info = None
++    if input_encoding is None:
++        source_info = detect_source(
++            uri=source, verify_ssl=verify_ssl, progress=progress
++        )
++        input_encoding = source_info.encoding or DEFAULT_INPUT_ENCODING
++
++    if input_locale is not None:
++        with rows.locale_context(input_locale):
++            table = _import_table(
++                source_info or source,
++                encoding=input_encoding,
++                verify_ssl=verify_ssl,
++                timeout=timeout,
++                progress=progress,
++                samples=samples,
++                mode="stream" if order_by is None else "eager",
++                **input_options
++            )
++    else:
++        table = _import_table(
++            source_info or source,
++            encoding=input_encoding,
++            verify_ssl=verify_ssl,
++            timeout=timeout,
++            progress=progress,
++            samples=samples,
++            mode="stream" if order_by is None else "eager",
++            **input_options
++        )
++
++    # Parse and validate column names
++    column_names = make_header(columns.split(","), permit_not=False)
++    missing_columns = set(column_names) - set(table.field_names)
++    if missing_columns:
++        missing = ", ".join(['"{}"'.format(field) for field in sorted(missing_columns)])
++        click.echo("ERROR: Table does not have columns: {}".format(missing), err=True)
++        sys.exit(1)
++
++    # Select the specified columns
++    result = rows.select(table, column_names)
++
++    if order_by is not None:
++        order_by = _get_field_names(order_by, result.field_names, permit_not=True)
++        # TODO: use complete list of `order_by` fields
++        result.order_by(order_by[0].replace("^", "-"))
++
++    # TODO: may use sys.stdout.encoding if output_file = '-'
++    output_encoding = output_encoding or DEFAULT_OUTPUT_ENCODING
++    if output_locale is not None:
++        with rows.locale_context(output_locale):
++            export_to_uri(
++                result,
++                destination,
++                encoding=output_encoding,
++                **output_options
++            )
++    else:
++        export_to_uri(
++            result, destination, encoding=output_encoding, **output_options
++        )
++
++
+ if __name__ == "__main__":
+     cli()
+diff --git a/rows/operations.py b/rows/operations.py
+index b93bca3..da5f3ea 100644
+--- a/rows/operations.py
++++ b/rows/operations.py
+@@ -103,3 +103,53 @@ def transpose(table, fields_column, *args, **kwargs):
+ 
+     table_rows = [[row[field_name] for field_name in field_names] for row in new_rows]
+     return create_table([field_names] + table_rows, *args, **kwargs)
++
++
++def select(table, columns):
++    """
++    Select specific columns from a table (like SQL SELECT col1, col2)
++    
++    Returns a new table with only the specified columns in the requested order.
++    
++    Args:
++        table: The source Table object
++        columns: List of column names to select
++        
++    Returns:
++        A new Table object with only the selected columns
++        
++    Raises:
++        ValueError: If columns list is empty or contains non-existent column names
++    """
++    from rows.compat import ORDERED_DICT
++    from rows.plugins.utils import create_table
++    
++    if not columns:
++        raise ValueError("Columns list cannot be empty")
++    
++    # Validate that all requested columns exist
++    table_field_names = table.field_names
++    missing_columns = set(columns) - set(table_field_names)
++    if missing_columns:
++        raise ValueError(
++            "Columns not found in table: {}".format(", ".join(sorted(missing_columns)))
++        )
++    
++    # Create new fields dict with only selected columns in the requested order
++    selected_fields = ORDERED_DICT([
++        (column, table.fields[column]) for column in columns
++    ])
++    
++    # Extract data for selected columns
++    data = []
++    for row in table:
++        row_dict = row._asdict()
++        data.append(tuple([row_dict[column] for column in columns]))
++    
++    # Create new table with selected fields and data
++    return create_table(
++        data=data,
++        fields=selected_fields,
++        skip_header=False,
++        mode=table.mode
++    )

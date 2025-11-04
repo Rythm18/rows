@@ -103,3 +103,53 @@ def transpose(table, fields_column, *args, **kwargs):
 
     table_rows = [[row[field_name] for field_name in field_names] for row in new_rows]
     return create_table([field_names] + table_rows, *args, **kwargs)
+
+
+def select(table, columns):
+    """
+    Select specific columns from a table (like SQL SELECT col1, col2)
+    
+    Returns a new table with only the specified columns in the requested order.
+    
+    Args:
+        table: The source Table object
+        columns: List of column names to select
+        
+    Returns:
+        A new Table object with only the selected columns
+        
+    Raises:
+        ValueError: If columns list is empty or contains non-existent column names
+    """
+    from rows.compat import ORDERED_DICT
+    from rows.plugins.utils import create_table
+    
+    if not columns:
+        raise ValueError("Columns list cannot be empty")
+    
+    # Validate that all requested columns exist
+    table_field_names = table.field_names
+    missing_columns = set(columns) - set(table_field_names)
+    if missing_columns:
+        raise ValueError(
+            "Columns not found in table: {}".format(", ".join(sorted(missing_columns)))
+        )
+    
+    # Create new fields dict with only selected columns in the requested order
+    selected_fields = ORDERED_DICT([
+        (column, table.fields[column]) for column in columns
+    ])
+    
+    # Extract data for selected columns
+    data = []
+    for row in table:
+        row_dict = row._asdict()
+        data.append(tuple([row_dict[column] for column in columns]))
+    
+    # Create new table with selected fields and data
+    return create_table(
+        data=data,
+        fields=selected_fields,
+        skip_header=False,
+        mode=table.mode
+    )
