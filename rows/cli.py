@@ -1752,5 +1752,123 @@ def list_sheets(source):
         click.echo(sheet_name)
 
 
+@cli.command(name="select", help="Select specific columns from a table")
+@click.option("--input-encoding", default=None)
+@click.option("--output-encoding", default="utf-8")
+@click.option("--input-locale")
+@click.option("--output-locale")
+@click.option("--verify-ssl", type=bool, default=True)
+@click.option("--timeout", type=int, default=10)
+@click.option("--order-by")
+@click.option(
+    "--samples",
+    type=int,
+    default=DEFAULT_SAMPLE_ROWS,
+    help="Number of rows to determine the field types (0 = all)",
+)
+@click.option(
+    "--input-option",
+    "-i",
+    multiple=True,
+    help="Custom (import) plugin key=value custom option (can be specified multiple times)",
+)
+@click.option(
+    "--output-option",
+    "-o",
+    multiple=True,
+    help="Custom (export) plugin key=value custom option (can be specified multiple times)",
+)
+@click.option("--quiet", "-q", is_flag=True)
+@click.argument("columns", required=True)
+@click.argument("source", required=True)
+@click.argument("destination", required=True)
+def select_command(
+    input_encoding,
+    output_encoding,
+    input_locale,
+    output_locale,
+    verify_ssl,
+    timeout,
+    order_by,
+    samples,
+    input_option,
+    output_option,
+    quiet,
+    columns,
+    source,
+    destination,
+):
+    import rows
+    from rows.fields import make_header
+    from rows.utils import detect_source, export_to_uri
+
+    input_options = parse_options(input_option)
+    output_options = parse_options(output_option)
+    progress = not quiet and _tqdm_available
+
+    input_encoding = input_encoding or input_options.get("encoding", None)
+    source_info = None
+    if input_encoding is None:
+        source_info = detect_source(
+            uri=source, verify_ssl=verify_ssl, progress=progress
+        )
+        input_encoding = source_info.encoding or DEFAULT_INPUT_ENCODING
+
+    if input_locale is not None:
+        with rows.locale_context(input_locale):
+            table = _import_table(
+                source_info or source,
+                encoding=input_encoding,
+                verify_ssl=verify_ssl,
+                timeout=timeout,
+                progress=progress,
+                samples=samples,
+                mode="stream" if order_by is None else "eager",
+                **input_options
+            )
+    else:
+        table = _import_table(
+            source_info or source,
+            encoding=input_encoding,
+            verify_ssl=verify_ssl,
+            timeout=timeout,
+            progress=progress,
+            samples=samples,
+            mode="stream" if order_by is None else "eager",
+            **input_options
+        )
+
+    # Parse and validate column names
+    column_names = make_header(columns.split(","), permit_not=False)
+    missing_columns = set(column_names) - set(table.field_names)
+    if missing_columns:
+        missing = ", ".join(['"{}"'.format(field) for field in sorted(missing_columns)])
+        click.echo("ERROR: Table does not have columns: {}".format(missing), err=True)
+        sys.exit(1)
+
+    # Select the specified columns
+    result = rows.select(table, column_names)
+
+    if order_by is not None:
+        order_by = _get_field_names(order_by, result.field_names, permit_not=True)
+        # TODO: use complete list of `order_by` fields
+        result.order_by(order_by[0].replace("^", "-"))
+
+    # TODO: may use sys.stdout.encoding if output_file = '-'
+    output_encoding = output_encoding or DEFAULT_OUTPUT_ENCODING
+    if output_locale is not None:
+        with rows.locale_context(output_locale):
+            export_to_uri(
+                result,
+                destination,
+                encoding=output_encoding,
+                **output_options
+            )
+    else:
+        export_to_uri(
+            result, destination, encoding=output_encoding, **output_options
+        )
+
+
 if __name__ == "__main__":
     cli()
