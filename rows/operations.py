@@ -103,3 +103,56 @@ def transpose(table, fields_column, *args, **kwargs):
 
     table_rows = [[row[field_name] for field_name in field_names] for row in new_rows]
     return create_table([field_names] + table_rows, *args, **kwargs)
+
+
+def union(tables):
+    """
+    Perform a UNION operation combining multiple tables vertically (concatenating rows)
+
+    All tables must have the same field names and compatible field types. The resulting table
+    will contain all rows from all input tables in the order they appear.
+
+    Args:
+        tables: A list of Table objects to union together
+
+    Returns:
+        A new Table containing all rows from all input tables
+
+    Raises:
+        ValueError: If tables have different field names or if tables list is empty
+    """
+    from rows.plugins.utils import create_table
+
+    if not tables:
+        raise ValueError("Cannot perform union on empty list of tables")
+
+    # Filter out empty tables but keep at least one for schema reference
+    non_empty_tables = [t for t in tables if len(t) > 0]
+    if not non_empty_tables:
+        # All tables are empty, return an empty table with the first table's schema
+        return create_table(data=[], fields=tables[0].fields, skip_header=False, mode="eager")
+
+    # Use the first non-empty table as reference for field names and types
+    reference_table = tables[0]
+    reference_field_names = reference_table.field_names
+    reference_fields = reference_table.fields
+
+    # Validate that all tables have the same field names
+    for i, table in enumerate(tables[1:], start=1):
+        if table.field_names != reference_field_names:
+            raise ValueError(
+                "All tables must have the same field names. "
+                "Table 0 has fields {}, but table {} has fields {}".format(
+                    reference_field_names, i, table.field_names
+                )
+            )
+
+    # Collect all rows from all tables
+    all_rows = []
+    for table in tables:
+        for row in table:
+            # Convert row to tuple to ensure consistency
+            all_rows.append(tuple(getattr(row, field_name) for field_name in reference_field_names))
+
+    # Create and return the union table
+    return create_table(data=all_rows, fields=reference_fields, skip_header=False, mode="eager")

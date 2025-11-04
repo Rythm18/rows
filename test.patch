@@ -1,0 +1,581 @@
+diff --git a/PROBLEM.md b/PROBLEM.md
+new file mode 100644
+index 0000000..e8e9af2
+--- /dev/null
++++ b/PROBLEM.md
+@@ -0,0 +1,32 @@
++# Table Union Operation
++
++## Problem Brief
++
++The rows library currently provides `join()` for horizontal table combination (merging columns) but lacks a `union()` operation for vertical combination (concatenating rows). Users need to combine multiple tables with identical schemas by stacking their rows end-to-end, similar to SQL's UNION operation. This feature enables common data pipeline tasks like merging split datasets, combining query results, or aggregating data from multiple sources.
++
++## Agent Instructions
++
++**Objective**: Implement a `rows.union()` function that vertically concatenates multiple tables with matching schemas.
++
++**Acceptance Criteria**:
++1. Add `union(tables)` function to `rows/operations.py` that accepts a list of Table objects
++2. Validate all tables have identical field names; raise `ValueError` if schemas differ
++3. Return a new Table containing all rows from all input tables in sequential order
++4. Handle edge cases: empty tables (skip them), all empty tables (return empty table with first schema)
++5. Export `union` from `rows/__init__.py` alongside existing operations
++6. All new tests in `tests/tests_operations_union.py` must pass
++7. Existing test suite must continue passing (verify with `./test.sh base`)
++
++**Implementation Hints**:
++- Follow the pattern of existing operations (`join`, `transform`, `transpose`)
++- Use `create_table()` from `rows.plugins.utils` for result table creation
++- Iterate through input tables, extracting rows and converting to tuples
++- Preserve field types from first table's schema
++
++## Test Assumptions
++
++- **Function location**: `rows.operations.union(tables)`
++- **Function signature**: `union(tables: List[Table]) -> Table`
++- **Module export**: Accessible as `rows.union()`
++- **Test file**: `tests/tests_operations_union.py`
++- **Error behavior**: Raises `ValueError` with message containing "field names" when schemas mismatch
+diff --git a/rows/__init__.py b/rows/__init__.py
+index a3e7f7b..d89f84d 100644
+--- a/rows/__init__.py
++++ b/rows/__init__.py
+@@ -15,7 +15,7 @@ from __future__ import unicode_literals
+ from rows import plugins
+ from rows.fileio import cfopen  # noqa
+ from rows.localization import locale_context  # noqa
+-from rows.operations import join, transform, transpose  # noqa
++from rows.operations import join, transform, transpose, union  # noqa
+ from rows.table import EagerTable, FlexibleTable, IncrementalTable, Table, StreamTable  # noqa
+ from rows.version import as_string as __version__  # noqa
+ 
+diff --git a/rows/operations.py b/rows/operations.py
+index b93bca3..7a200b7 100644
+--- a/rows/operations.py
++++ b/rows/operations.py
+@@ -103,3 +103,56 @@ def transpose(table, fields_column, *args, **kwargs):
+ 
+     table_rows = [[row[field_name] for field_name in field_names] for row in new_rows]
+     return create_table([field_names] + table_rows, *args, **kwargs)
++
++
++def union(tables):
++    """
++    Perform a UNION operation combining multiple tables vertically (concatenating rows)
++
++    All tables must have the same field names and compatible field types. The resulting table
++    will contain all rows from all input tables in the order they appear.
++
++    Args:
++        tables: A list of Table objects to union together
++
++    Returns:
++        A new Table containing all rows from all input tables
++
++    Raises:
++        ValueError: If tables have different field names or if tables list is empty
++    """
++    from rows.plugins.utils import create_table
++
++    if not tables:
++        raise ValueError("Cannot perform union on empty list of tables")
++
++    # Filter out empty tables but keep at least one for schema reference
++    non_empty_tables = [t for t in tables if len(t) > 0]
++    if not non_empty_tables:
++        # All tables are empty, return an empty table with the first table's schema
++        return create_table(data=[], fields=tables[0].fields, skip_header=False, mode="eager")
++
++    # Use the first non-empty table as reference for field names and types
++    reference_table = tables[0]
++    reference_field_names = reference_table.field_names
++    reference_fields = reference_table.fields
++
++    # Validate that all tables have the same field names
++    for i, table in enumerate(tables[1:], start=1):
++        if table.field_names != reference_field_names:
++            raise ValueError(
++                "All tables must have the same field names. "
++                "Table 0 has fields {}, but table {} has fields {}".format(
++                    reference_field_names, i, table.field_names
++                )
++            )
++
++    # Collect all rows from all tables
++    all_rows = []
++    for table in tables:
++        for row in table:
++            # Convert row to tuple to ensure consistency
++            all_rows.append(tuple(getattr(row, field_name) for field_name in reference_field_names))
++
++    # Create and return the union table
++    return create_table(data=all_rows, fields=reference_fields, skip_header=False, mode="eager")
+diff --git a/solution.patch b/solution.patch
+new file mode 100644
+index 0000000..e96dfa7
+--- /dev/null
++++ b/solution.patch
+@@ -0,0 +1,74 @@
++diff --git a/rows/__init__.py b/rows/__init__.py
++index a3e7f7b..d89f84d 100644
++--- a/rows/__init__.py
+++++ b/rows/__init__.py
++@@ -15,7 +15,7 @@ from __future__ import unicode_literals
++ from rows import plugins
++ from rows.fileio import cfopen  # noqa
++ from rows.localization import locale_context  # noqa
++-from rows.operations import join, transform, transpose  # noqa
+++from rows.operations import join, transform, transpose, union  # noqa
++ from rows.table import EagerTable, FlexibleTable, IncrementalTable, Table, StreamTable  # noqa
++ from rows.version import as_string as __version__  # noqa
++ 
++diff --git a/rows/operations.py b/rows/operations.py
++index b93bca3..7a200b7 100644
++--- a/rows/operations.py
+++++ b/rows/operations.py
++@@ -103,3 +103,56 @@ def transpose(table, fields_column, *args, **kwargs):
++ 
++     table_rows = [[row[field_name] for field_name in field_names] for row in new_rows]
++     return create_table([field_names] + table_rows, *args, **kwargs)
+++
+++
+++def union(tables):
+++    """
+++    Perform a UNION operation combining multiple tables vertically (concatenating rows)
+++
+++    All tables must have the same field names and compatible field types. The resulting table
+++    will contain all rows from all input tables in the order they appear.
+++
+++    Args:
+++        tables: A list of Table objects to union together
+++
+++    Returns:
+++        A new Table containing all rows from all input tables
+++
+++    Raises:
+++        ValueError: If tables have different field names or if tables list is empty
+++    """
+++    from rows.plugins.utils import create_table
+++
+++    if not tables:
+++        raise ValueError("Cannot perform union on empty list of tables")
+++
+++    # Filter out empty tables but keep at least one for schema reference
+++    non_empty_tables = [t for t in tables if len(t) > 0]
+++    if not non_empty_tables:
+++        # All tables are empty, return an empty table with the first table's schema
+++        return create_table(data=[], fields=tables[0].fields, skip_header=False, mode="eager")
+++
+++    # Use the first non-empty table as reference for field names and types
+++    reference_table = tables[0]
+++    reference_field_names = reference_table.field_names
+++    reference_fields = reference_table.fields
+++
+++    # Validate that all tables have the same field names
+++    for i, table in enumerate(tables[1:], start=1):
+++        if table.field_names != reference_field_names:
+++            raise ValueError(
+++                "All tables must have the same field names. "
+++                "Table 0 has fields {}, but table {} has fields {}".format(
+++                    reference_field_names, i, table.field_names
+++                )
+++            )
+++
+++    # Collect all rows from all tables
+++    all_rows = []
+++    for table in tables:
+++        for row in table:
+++            # Convert row to tuple to ensure consistency
+++            all_rows.append(tuple(getattr(row, field_name) for field_name in reference_field_names))
+++
+++    # Create and return the union table
+++    return create_table(data=all_rows, fields=reference_fields, skip_header=False, mode="eager")
+diff --git a/test.patch b/test.patch
+new file mode 100644
+index 0000000..a79df31
+--- /dev/null
++++ b/test.patch
+@@ -0,0 +1,193 @@
++diff --git a/test.sh b/test.sh
++new file mode 100755
++index 0000000..8023cce
++--- /dev/null
+++++ b/test.sh
++@@ -0,0 +1,23 @@
+++#!/bin/bash
+++set -e
+++
+++case "$1" in
+++  base)
+++    # Run existing test suite; should pass on the base commit
+++    pytest tests/ rows/ --doctest-modules --ignore=to-do/ --ignore=examples/ --ignore=rows/plugins/__init__.py
+++    ;;
+++  new)
+++    # Run only the newly added tests; expected to fail before implementing the feature
+++    pytest \
+++      tests/tests_operations_union.py::test_union_basic \
+++      tests/tests_operations_union.py::test_union_multiple_tables \
+++      tests/tests_operations_union.py::test_union_with_type_compatibility \
+++      tests/tests_operations_union.py::test_union_empty_tables \
+++      tests/tests_operations_union.py::test_union_field_mismatch_error \
+++      tests/tests_operations_union.py::test_union_imports
+++    ;;
+++  *)
+++    echo "Usage: ./test.sh {base|new}"
+++    exit 1
+++    ;;
+++esac
++diff --git a/tests/tests_operations_union.py b/tests/tests_operations_union.py
++new file mode 100644
++index 0000000..5516a73
++--- /dev/null
+++++ b/tests/tests_operations_union.py
++@@ -0,0 +1,158 @@
+++# coding: utf-8
+++
+++# Copyright 2014-2025 Álvaro Justen <https://github.com/turicas/rows/>
+++#    This program is free software: you can redistribute it and/or modify it under the terms of the GNU Lesser General
+++#    Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option)
+++#    any later version.
+++#    This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
+++#    warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License for
+++#    more details.
+++#    You should have received a copy of the GNU Lesser General Public License along with this program.  If not, see
+++#    <http://www.gnu.org/licenses/>.
+++
+++from __future__ import unicode_literals
+++
+++import unittest
+++from collections import OrderedDict
+++
+++import rows
+++import rows.operations
+++import tests.utils as utils
+++
+++
+++class UnionOperationsTestCase(utils.RowsTestMixIn, unittest.TestCase):
+++    def test_union_imports(self):
+++        """Test that union is properly exported from rows module"""
+++        assert hasattr(rows, "union")
+++        assert rows.union is rows.operations.union
+++
+++    def test_union_basic(self):
+++        """Test basic union of two tables with same schema"""
+++        # Create first table
+++        fields1 = OrderedDict([
+++            ("id", rows.fields.IntegerField),
+++            ("name", rows.fields.TextField),
+++            ("age", rows.fields.IntegerField),
+++        ])
+++        table1 = rows.Table(fields=fields1)
+++        table1.append({"id": 1, "name": "Alice", "age": 30})
+++        table1.append({"id": 2, "name": "Bob", "age": 25})
+++
+++        # Create second table with same schema
+++        fields2 = OrderedDict([
+++            ("id", rows.fields.IntegerField),
+++            ("name", rows.fields.TextField),
+++            ("age", rows.fields.IntegerField),
+++        ])
+++        table2 = rows.Table(fields=fields2)
+++        table2.append({"id": 3, "name": "Charlie", "age": 35})
+++        table2.append({"id": 4, "name": "Diana", "age": 28})
+++
+++        # Perform union
+++        result = rows.union([table1, table2])
+++
+++        # Verify results
+++        assert len(result) == 4
+++        assert result.field_names == ["id", "name", "age"]
+++        assert result[0].id == 1
+++        assert result[0].name == "Alice"
+++        assert result[0].age == 30
+++        assert result[1].id == 2
+++        assert result[1].name == "Bob"
+++        assert result[2].id == 3
+++        assert result[2].name == "Charlie"
+++        assert result[3].id == 4
+++        assert result[3].name == "Diana"
+++
+++    def test_union_multiple_tables(self):
+++        """Test union of more than two tables"""
+++        fields = OrderedDict([
+++            ("x", rows.fields.IntegerField),
+++            ("y", rows.fields.TextField),
+++        ])
+++        
+++        table1 = rows.Table(fields=fields)
+++        table1.append({"x": 1, "y": "a"})
+++
+++        table2 = rows.Table(fields=fields)
+++        table2.append({"x": 2, "y": "b"})
+++
+++        table3 = rows.Table(fields=fields)
+++        table3.append({"x": 3, "y": "c"})
+++
+++        table4 = rows.Table(fields=fields)
+++        table4.append({"x": 4, "y": "d"})
+++
+++        result = rows.union([table1, table2, table3, table4])
+++
+++        assert len(result) == 4
+++        assert result[0].x == 1
+++        assert result[1].x == 2
+++        assert result[2].x == 3
+++        assert result[3].x == 4
+++
+++    def test_union_with_type_compatibility(self):
+++        """Test that union enforces field type consistency"""
+++        # Create two tables with same field names but compatible types
+++        fields1 = OrderedDict([
+++            ("id", rows.fields.IntegerField),
+++            ("value", rows.fields.FloatField),
+++        ])
+++        table1 = rows.Table(fields=fields1)
+++        table1.append({"id": 1, "value": 10.5})
+++
+++        fields2 = OrderedDict([
+++            ("id", rows.fields.IntegerField),
+++            ("value", rows.fields.FloatField),
+++        ])
+++        table2 = rows.Table(fields=fields2)
+++        table2.append({"id": 2, "value": 20.5})
+++
+++        result = rows.union([table1, table2])
+++
+++        assert len(result) == 2
+++        assert result.fields["value"] == rows.fields.FloatField
+++        assert result[0].value == 10.5
+++        assert result[1].value == 20.5
+++
+++    def test_union_empty_tables(self):
+++        """Test union with empty tables"""
+++        fields = OrderedDict([
+++            ("id", rows.fields.IntegerField),
+++            ("name", rows.fields.TextField),
+++        ])
+++        
+++        table1 = rows.Table(fields=fields)
+++        table1.append({"id": 1, "name": "Alice"})
+++
+++        table2 = rows.Table(fields=fields)  # Empty table
+++
+++        table3 = rows.Table(fields=fields)
+++        table3.append({"id": 2, "name": "Bob"})
+++
+++        result = rows.union([table1, table2, table3])
+++
+++        assert len(result) == 2
+++        assert result[0].id == 1
+++        assert result[1].id == 2
+++
+++    def test_union_field_mismatch_error(self):
+++        """Test that union raises error when field names don't match"""
+++        fields1 = OrderedDict([
+++            ("id", rows.fields.IntegerField),
+++            ("name", rows.fields.TextField),
+++        ])
+++        table1 = rows.Table(fields=fields1)
+++        table1.append({"id": 1, "name": "Alice"})
+++
+++        fields2 = OrderedDict([
+++            ("id", rows.fields.IntegerField),
+++            ("username", rows.fields.TextField),  # Different field name
+++        ])
+++        table2 = rows.Table(fields=fields2)
+++        table2.append({"id": 2, "username": "Bob"})
+++
+++        with self.assertRaises(ValueError) as context:
+++            rows.union([table1, table2])
+++        
+++        assert "field names" in str(context.exception).lower()
+diff --git a/test.sh b/test.sh
+new file mode 100755
+index 0000000..8405ee7
+--- /dev/null
++++ b/test.sh
+@@ -0,0 +1,20 @@
++#!/bin/bash
++set -e
++
++# Find pytest in common locations
++PYTEST=$(command -v pytest || echo "/home/ubuntu/.local/bin/pytest")
++
++case "$1" in
++  base)
++    # Run existing test suite; should pass on the base commit
++    $PYTEST tests/ rows/ --doctest-modules --ignore=to-do/ --ignore=examples/ --ignore=rows/plugins/__init__.py
++    ;;
++  new)
++    # Run only the newly added tests; expected to fail before implementing the feature
++    $PYTEST tests/tests_operations_union.py -v
++    ;;
++  *)
++    echo "Usage: ./test.sh {base|new}"
++    exit 1
++    ;;
++esac
+diff --git a/tests/tests_operations_union.py b/tests/tests_operations_union.py
+new file mode 100644
+index 0000000..5516a73
+--- /dev/null
++++ b/tests/tests_operations_union.py
+@@ -0,0 +1,158 @@
++# coding: utf-8
++
++# Copyright 2014-2025 Álvaro Justen <https://github.com/turicas/rows/>
++#    This program is free software: you can redistribute it and/or modify it under the terms of the GNU Lesser General
++#    Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option)
++#    any later version.
++#    This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied
++#    warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License for
++#    more details.
++#    You should have received a copy of the GNU Lesser General Public License along with this program.  If not, see
++#    <http://www.gnu.org/licenses/>.
++
++from __future__ import unicode_literals
++
++import unittest
++from collections import OrderedDict
++
++import rows
++import rows.operations
++import tests.utils as utils
++
++
++class UnionOperationsTestCase(utils.RowsTestMixIn, unittest.TestCase):
++    def test_union_imports(self):
++        """Test that union is properly exported from rows module"""
++        assert hasattr(rows, "union")
++        assert rows.union is rows.operations.union
++
++    def test_union_basic(self):
++        """Test basic union of two tables with same schema"""
++        # Create first table
++        fields1 = OrderedDict([
++            ("id", rows.fields.IntegerField),
++            ("name", rows.fields.TextField),
++            ("age", rows.fields.IntegerField),
++        ])
++        table1 = rows.Table(fields=fields1)
++        table1.append({"id": 1, "name": "Alice", "age": 30})
++        table1.append({"id": 2, "name": "Bob", "age": 25})
++
++        # Create second table with same schema
++        fields2 = OrderedDict([
++            ("id", rows.fields.IntegerField),
++            ("name", rows.fields.TextField),
++            ("age", rows.fields.IntegerField),
++        ])
++        table2 = rows.Table(fields=fields2)
++        table2.append({"id": 3, "name": "Charlie", "age": 35})
++        table2.append({"id": 4, "name": "Diana", "age": 28})
++
++        # Perform union
++        result = rows.union([table1, table2])
++
++        # Verify results
++        assert len(result) == 4
++        assert result.field_names == ["id", "name", "age"]
++        assert result[0].id == 1
++        assert result[0].name == "Alice"
++        assert result[0].age == 30
++        assert result[1].id == 2
++        assert result[1].name == "Bob"
++        assert result[2].id == 3
++        assert result[2].name == "Charlie"
++        assert result[3].id == 4
++        assert result[3].name == "Diana"
++
++    def test_union_multiple_tables(self):
++        """Test union of more than two tables"""
++        fields = OrderedDict([
++            ("x", rows.fields.IntegerField),
++            ("y", rows.fields.TextField),
++        ])
++        
++        table1 = rows.Table(fields=fields)
++        table1.append({"x": 1, "y": "a"})
++
++        table2 = rows.Table(fields=fields)
++        table2.append({"x": 2, "y": "b"})
++
++        table3 = rows.Table(fields=fields)
++        table3.append({"x": 3, "y": "c"})
++
++        table4 = rows.Table(fields=fields)
++        table4.append({"x": 4, "y": "d"})
++
++        result = rows.union([table1, table2, table3, table4])
++
++        assert len(result) == 4
++        assert result[0].x == 1
++        assert result[1].x == 2
++        assert result[2].x == 3
++        assert result[3].x == 4
++
++    def test_union_with_type_compatibility(self):
++        """Test that union enforces field type consistency"""
++        # Create two tables with same field names but compatible types
++        fields1 = OrderedDict([
++            ("id", rows.fields.IntegerField),
++            ("value", rows.fields.FloatField),
++        ])
++        table1 = rows.Table(fields=fields1)
++        table1.append({"id": 1, "value": 10.5})
++
++        fields2 = OrderedDict([
++            ("id", rows.fields.IntegerField),
++            ("value", rows.fields.FloatField),
++        ])
++        table2 = rows.Table(fields=fields2)
++        table2.append({"id": 2, "value": 20.5})
++
++        result = rows.union([table1, table2])
++
++        assert len(result) == 2
++        assert result.fields["value"] == rows.fields.FloatField
++        assert result[0].value == 10.5
++        assert result[1].value == 20.5
++
++    def test_union_empty_tables(self):
++        """Test union with empty tables"""
++        fields = OrderedDict([
++            ("id", rows.fields.IntegerField),
++            ("name", rows.fields.TextField),
++        ])
++        
++        table1 = rows.Table(fields=fields)
++        table1.append({"id": 1, "name": "Alice"})
++
++        table2 = rows.Table(fields=fields)  # Empty table
++
++        table3 = rows.Table(fields=fields)
++        table3.append({"id": 2, "name": "Bob"})
++
++        result = rows.union([table1, table2, table3])
++
++        assert len(result) == 2
++        assert result[0].id == 1
++        assert result[1].id == 2
++
++    def test_union_field_mismatch_error(self):
++        """Test that union raises error when field names don't match"""
++        fields1 = OrderedDict([
++            ("id", rows.fields.IntegerField),
++            ("name", rows.fields.TextField),
++        ])
++        table1 = rows.Table(fields=fields1)
++        table1.append({"id": 1, "name": "Alice"})
++
++        fields2 = OrderedDict([
++            ("id", rows.fields.IntegerField),
++            ("username", rows.fields.TextField),  # Different field name
++        ])
++        table2 = rows.Table(fields=fields2)
++        table2.append({"id": 2, "username": "Bob"})
++
++        with self.assertRaises(ValueError) as context:
++            rows.union([table1, table2])
++        
++        assert "field names" in str(context.exception).lower()
